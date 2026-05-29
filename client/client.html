@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Flashlight Maze - Thin Client</title>
+<style>
+  /* Minimal CSS: reset and hide overflow so canvas fills the viewport */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #status {
+    position: fixed; top: 8px; left: 8px;
+    color: #8f8; font-family: monospace; font-size: 12px;
+    pointer-events: none; text-shadow: 0 0 4px #000;
+  }
+  #controls {
+    position: fixed; top: 30px; left: 8px; color: #fff; font-family: sans-serif; font-size: 12px;
+    background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: auto;
+  }
+  #controls label { display: block; margin-bottom: 5px; }
+  #controls input { vertical-align: middle; width: 100px; margin-left: 5px; }
+  #overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.8); color: white; display: flex;
+    align-items: center; justify-content: center; flex-direction: column;
+    z-index: 1000; font-family: sans-serif; cursor: pointer;
+  }
+  #overlay h1 { margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div id="overlay">
+  <h1>CLICK ANYWHERE TO START</h1>
+  <p>Enables Game Audio & Connection</p>
+</div>
+<canvas id="game"></canvas>
+<div id="status">Connecting...</div>
+<div id="controls">
+  <label>FOV Angle: <span id="fovVal">150</span>° <input type="range" id="fovAngle" min="30" max="180" value="150"></label>
+  <label>FOV Radius: <span id="radVal">400</span> <input type="range" id="fovRadius" min="200" max="1000" value="400"></label>
+  <label>Volume: <span id="volVal">100</span>% <input type="range" id="volSlider" min="0" max="100" value="100"></label>
+</div>
+
+<script>
+/* =========================================================================
+   THIN CLIENT - FLASHLIGHT MAZE
+   - Renders authoritative state from a Node.js server (WebSocket @ 10Hz).
+   - No physics; only rendering, camera math, FOV clipping, and adaptive audio.
+   ========================================================================= */
+
+// ---------- Canvas Setup ----------
+const canvas = document.getElementById('game');
+const ctx    = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+
+function resize() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- Game State (mirror of authoritative server state) ----------
+const state = {
+  mapWidth:  0,
+  mapHeight: 0,
+  walls:     [],                        // [{x,y,w,h}, ...]
+  player:    { x: 0, y: 0, aim_angle: 0, radius: 12 },
+  enemy:     null,                      // {x,y, size} or null
+  bullets:   [],                        // [{x,y}, ...]
+  connected: false
+};
+
+// ---------- Configurable Constants ----------
+let FOV_DEGREES = 150;
+let FOV_RADIUS = 400;
+let VOL_MULT = 1.0;
+
+document.getElementById('fovAngle').oninput = (e) => {
+  FOV_DEGREES = parseInt(e.target.value);
+  document.getElementById('fovVal').innerText = FOV_DEGREES;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'config', fov: FOV_DEGREES }));
+  }
+};
+document.getElementById('fovRadius').oninput = (e) => {
+  FOV_RADIUS = parseInt(e.target.value);
+  document.getElementById('radVal').innerText = FOV_RADIUS;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'config', fovRadius: FOV_RADIUS }));
+  }
+};
+document.getElementById('volSlider').oninput = (e) => {
+  VOL_MULT = parseInt(e.target.value) / 100;
+  document.getElementById('volVal').innerText = e.target.value;
+};
+
+// ---------- WebSocket ----------
+let ws;
+function connect() {
+  ws = new WebSocket('ws://localhost:8080');
+
+  ws.onopen = () => {
+    state.connected = true;
+    statusEl.textContent = 'Connected';
+  };
+
+  ws.onclose = () => {
+    state.connected = false;
+    statusEl.textContent = 'Disconnected — retrying...';
+    setTimeout(connect, 1500);
+  };
+
+  ws.onerror = () => {
+    statusEl.textContent = 'WebSocket error';
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+
+    if (msg.type === 'init') {
+      state.mapWidth  = msg.map_width;
+      state.mapHeight = msg.map_height;
+      state.walls     = msg.walls || [];
+      state.exit      = msg.exit || null;
+    }
+    else if (msg.type === 'update') {
+      state.gameState = msg.gameState;
+      if (msg.player) state.player = { ...state.player, ...msg.player };
+      state.enemy   = msg.enemy || null;
+      state.enemy_dist = msg.enemy_dist;
+      state.bullets = msg.bullets || [];
+    }
+    else if (msg.type === 'sound') {
+      if (sfx[msg.sound]) {
+        sfx[msg.sound].currentTime = 0;
+        sfx[msg.sound].play().catch(e => {});
+      }
+    }
+  };
+}
+connect();
+
+// ===========================================================================
+//                            ADAPTIVE AUDIO
+// ===========================================================================
+const sfx = {
+  start: new Audio('invincible_start.ogg'),
+  win: new Audio('tada.ogg'),
+  kill: new Audio('kill.wav'),
+  stun: new Audio('icecrash.ogg'),
+  shoot: new Audio('firecracker.ogg'),
+  willowisp: new Audio('willowisp.wav'),
+  footstep: new Audio('ticking.wav')
+};
+sfx.willowisp.loop = true;
+sfx.footstep.loop = true;
+
+let audioStarted = false;
+function initAudio() {
+  if (audioStarted) return;
+  audioStarted = true;
+  
+  sfx.willowisp.volume = 0;
+  sfx.willowisp.play().catch(e => {});
+  
+  sfx.footstep.volume = 0;
+  sfx.footstep.play().catch(e => {});
+}
+
+function updateAudio() {
+  if (!audioStarted) return;
+
+  let d = null;
+  if (state.enemy_dist !== undefined) {
+    d = state.enemy_dist;
+  } else if (state.enemy) {
+    const dx = state.enemy.x - state.player.x;
+    const dy = state.enemy.y - state.player.y;
+    d  = Math.hypot(dx, dy);
+  }
+
+  if (d !== null && state.gameState === 'playing') {
+    const DIST_FAR = 900;
+    const DIST_NEAR = 300;
+    const DIST_MELEE = 40;
+    
+    let volWillow = 0;
+    let volFootstep = 0;
+
+    if (d > DIST_FAR) {
+      // Enemy is too far to hear clearly
+      volWillow = 0;
+      volFootstep = 0;
+    } else if (d > DIST_NEAR) {
+      // Enemy is near: Willowisp fades in from 50% to 100%
+      const t = 1 - ((d - DIST_NEAR) / (DIST_FAR - DIST_NEAR));
+      volWillow = 0.5 + (0.5 * t); 
+      volFootstep = 0;
+    } else {
+      // Enemy is VERY near: Willowisp is maxed out, Footsteps start fading in
+      volWillow = 1.0;
+      const t = 1 - ((d - DIST_MELEE) / (DIST_NEAR - DIST_MELEE));
+      volFootstep = Math.max(0, Math.min(1, t)); 
+    }
+
+    // Apply master volume multiplier and clamp to [0, 1] to prevent Audio API errors
+    sfx.willowisp.volume = Math.max(0, Math.min(1, volWillow * VOL_MULT));
+    sfx.footstep.volume = Math.max(0, Math.min(1, volFootstep * VOL_MULT));
+    
+  } else {
+    // Mute ambient loops if game is over
+    sfx.willowisp.volume = 0;
+    sfx.footstep.volume = 0;
+  }
+}
+
+// Browsers require a user gesture to start audio
+function startAudio() {
+  initAudio();
+  document.getElementById('overlay').style.display = 'none';
+}
+document.getElementById('overlay').addEventListener('click', startAudio);
+
+// ===========================================================================
+//                                RENDERING
+// ===========================================================================
+function render() {
+  const W = canvas.width;
+  const H = canvas.height;
+
+  // 1) Paint full screen black — this hides everything not in the cone.
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  if (!state.connected) {
+    statusEl.textContent = 'Connecting...';
+    requestAnimationFrame(render);
+    return;
+  }
+
+  // -----------------------------------------------------------------------
+  // 2) Camera offset:
+  //    The player must always appear at the screen centre. To achieve that
+  //    we translate every world coordinate by (offsetX, offsetY) where:
+  //
+  //       offsetX = W/2 - player.x
+  //       offsetY = H/2 - player.y
+  //
+  //    So any world point (wx, wy) is drawn at screen coords
+  //       (wx + offsetX, wy + offsetY).
+  // -----------------------------------------------------------------------
+  const offsetX = W / 2 - state.player.x;
+  const offsetY = H / 2 - state.player.y;
+
+  // -----------------------------------------------------------------------
+  // 3) FLASHLIGHT CLIPPING:
+  //    Build a triangular/wedge clipping path from the screen centre out to
+  //    the canvas edges, spanning ±25° around player.aim_angle.
+  //
+  //    Everything drawn AFTER ctx.clip() is masked to that wedge — anything
+  //    outside the cone stays black, producing the flashlight effect.
+  // -----------------------------------------------------------------------
+  ctx.save();
+
+  const cx = W / 2;
+  const cy = H / 2;
+
+  // Draw floor globally
+  ctx.fillStyle = '#263238';
+  ctx.fillRect(0, 0, W, H);
+
+  // ---------------- Draw Walls ----------------
+  ctx.fillStyle = '#546e7a'; // Lighter grey-blue wall fill
+  ctx.strokeStyle = '#cfd8dc'; // Bright wall edge
+  ctx.lineWidth = 2;
+  for (const wall of state.walls) {
+    const sx = wall.x + offsetX;
+    const sy = wall.y + offsetY;
+    // Cull off-screen walls quickly
+    if (sx + wall.w < 0 || sy + wall.h < 0 || sx > W || sy > H) continue;
+    ctx.fillRect(sx, sy, wall.w, wall.h);
+    ctx.strokeRect(sx, sy, wall.w, wall.h);
+  }
+
+  // ---------------- Draw Exit ----------------
+  if (state.exit) {
+    ctx.fillStyle = '#4caf50';
+    const ex = state.exit.x + offsetX;
+    const ey = state.exit.y + offsetY;
+    ctx.fillRect(ex, ey, state.exit.w, state.exit.h);
+  }
+
+  // ---------------- Draw Bullets ----------------
+  ctx.fillStyle = '#ffeb3b';
+  for (const b of state.bullets) {
+    const sx = b.x + offsetX;
+    const sy = b.y + offsetY;
+    ctx.beginPath();
+    ctx.arc(sx, sy, b.radius || 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ---------------- Draw Enemy ----------------
+  if (state.enemy) {
+    const size = state.enemy.size || 30;
+    const sx = state.enemy.x + offsetX - size / 2;
+    const sy = state.enemy.y + offsetY - size / 2;
+    
+    if (state.enemy.is_stunned) {
+      ctx.fillStyle = '#00bcd4';
+      ctx.fillRect(sx, sy, size, size);
+      ctx.strokeStyle = '#81d4fa';
+    } else {
+      ctx.fillStyle = '#e53935';
+      ctx.fillRect(sx, sy, size, size);
+      ctx.strokeStyle = '#ff8a80';
+    }
+    
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sx, sy, size, size);
+  }
+
+  ctx.restore();
+
+  // ---------------- MASK GENERATION (Raycasting + Fading) ----------------
+  if (!window.maskCanvas) {
+    window.maskCanvas = document.createElement('canvas');
+    window.maskCtx = window.maskCanvas.getContext('2d');
+    window.lightCanvas = document.createElement('canvas');
+    window.lightCtx = window.lightCanvas.getContext('2d');
+  }
+  maskCanvas.width = W; maskCanvas.height = H;
+  lightCanvas.width = W; lightCanvas.height = H;
+
+  const fovRad = FOV_DEGREES * Math.PI / 180;
+  const maxRadius = FOV_RADIUS * 1.3;
+  const aim = state.player.aim_angle;
+
+  // 1. Create the soft light shape in lightCanvas
+  const conic = lightCtx.createConicGradient(aim, cx, cy);
+  const halfAngle = (fovRad / 2) / (Math.PI * 2);
+  const fadeHalfAngle = (fovRad * 1.4 / 2) / (Math.PI * 2);
+  
+  const startFadeRight = halfAngle;
+  const endFadeRight = Math.min(0.5, fadeHalfAngle);
+  const startFadeLeft = Math.max(0.5, 1 - fadeHalfAngle);
+  const endFadeLeft = 1 - halfAngle;
+
+  conic.addColorStop(0, 'rgba(255,255,255,1)');
+  conic.addColorStop(startFadeRight, 'rgba(255,255,255,1)');
+  conic.addColorStop(endFadeRight, 'rgba(255,255,255,0)');
+  conic.addColorStop(startFadeLeft, 'rgba(255,255,255,0)');
+  conic.addColorStop(endFadeLeft, 'rgba(255,255,255,1)');
+  conic.addColorStop(1, 'rgba(255,255,255,1)');
+
+  lightCtx.fillStyle = conic;
+  lightCtx.fillRect(0, 0, W, H);
+
+  lightCtx.globalCompositeOperation = 'source-in';
+  const radial = lightCtx.createRadialGradient(cx, cy, 0, cx, cy, maxRadius);
+  radial.addColorStop(0, 'rgba(255,255,255,1)');
+  radial.addColorStop(FOV_RADIUS / maxRadius, 'rgba(255,255,255,1)'); 
+  radial.addColorStop(1, 'rgba(255,255,255,0)');
+  
+  lightCtx.fillStyle = radial;
+  lightCtx.fillRect(0, 0, W, H);
+  
+  lightCtx.globalCompositeOperation = 'source-over';
+  const baseRadial = lightCtx.createRadialGradient(cx, cy, 0, cx, cy, FOV_RADIUS * 0.3);
+  baseRadial.addColorStop(0, 'rgba(255,255,255,0.6)');
+  baseRadial.addColorStop(1, 'rgba(255,255,255,0)');
+  lightCtx.fillStyle = baseRadial;
+  lightCtx.beginPath();
+  lightCtx.arc(cx, cy, FOV_RADIUS * 0.3, 0, Math.PI*2);
+  lightCtx.fill();
+
+  // 2. Prepare the Mask Canvas
+  maskCtx.fillStyle = 'rgba(0,0,0,1)';
+  maskCtx.fillRect(0, 0, W, H);
+
+  // 3. Raycast 360 degrees to build the visibility polygon
+  maskCtx.beginPath();
+  maskCtx.moveTo(cx, cy);
+
+  const STEPS = 180;
+  for (let i = 0; i <= STEPS; i++) {
+    const a = aim - Math.PI + (Math.PI * 2 * (i / STEPS));
+    const dx = Math.cos(a);
+    const dy = Math.sin(a);
+    
+    let rayDist = maxRadius;
+    
+    for (const w of state.walls) {
+      const wx = w.x + offsetX;
+      const wy = w.y + offsetY;
+      
+      if (dx !== 0) {
+        let t1 = (wx - cx) / dx;
+        if (t1 > 0 && t1 < rayDist) {
+          let y = cy + t1 * dy;
+          if (y >= wy && y <= wy + w.h) rayDist = t1;
+        }
+        let t2 = (wx + w.w - cx) / dx;
+        if (t2 > 0 && t2 < rayDist) {
+          let y = cy + t2 * dy;
+          if (y >= wy && y <= wy + w.h) rayDist = t2;
+        }
+      }
+      if (dy !== 0) {
+        let t1 = (wy - cy) / dy;
+        if (t1 > 0 && t1 < rayDist) {
+          let x = cx + t1 * dx;
+          if (x >= wx && x <= wx + w.w) rayDist = t1;
+        }
+        let t2 = (wy + w.h - cy) / dy;
+        if (t2 > 0 && t2 < rayDist) {
+          let x = cx + t2 * dx;
+          if (x >= wx && x <= wx + w.w) rayDist = t2;
+        }
+      }
+    }
+    maskCtx.lineTo(cx + dx * rayDist, cy + dy * rayDist);
+  }
+  maskCtx.closePath();
+
+  // 4. Punch out the light inside the visible polygon
+  maskCtx.save();
+  maskCtx.clip();
+  maskCtx.globalCompositeOperation = 'destination-out';
+  maskCtx.drawImage(lightCanvas, 0, 0);
+  maskCtx.restore();
+
+  // 5. Draw the mask over the main canvas
+  ctx.drawImage(maskCanvas, 0, 0);
+
+  // -----------------------------------------------------------------------
+  // 4) Draw the Player UNCLIPPED at exact screen centre. The player is
+  //    always visible regardless of the flashlight cone.
+  // -----------------------------------------------------------------------
+  const pr = state.player.radius || 15;
+  ctx.fillStyle = '#2196f3';
+  ctx.beginPath();
+  ctx.arc(cx, cy, pr, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#bbdefb';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Aim indicator (small line)
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.cos(aim) * (pr + 10),
+             cy + Math.sin(aim) * (pr + 10));
+  ctx.stroke();
+
+  // HUD
+  statusEl.textContent =
+      `Connected | pos (${state.player.x.toFixed(0)}, ${state.player.y.toFixed(0)}) ` +
+      `| enemy: ${state.enemy ? (state.enemy.is_stunned ? 'STUNNED' : 'VISIBLE') : 'hidden'} ` +
+      `| dist: ${state.enemy_dist !== undefined ? state.enemy_dist : '?'} ` +
+      `| bullets: ${state.bullets.length}`;
+
+  // Update adaptive audio every frame
+  updateAudio();
+
+  if (state.gameState === 'waiting') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ffeb3b';
+    ctx.font = 'bold 48px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('PRESS JOYSTICK TO START', W / 2, H / 2);
+    requestAnimationFrame(render);
+    return;
+  }
+
+  if (state.gameState === 'win') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#4caf50';
+    ctx.font = 'bold 64px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ESCAPED!', W / 2, H / 2);
+    requestAnimationFrame(render);
+    return;
+  }
+  
+  if (state.gameState === 'lose') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#f44336';
+    ctx.font = 'bold 64px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('YOU DIED', W / 2, H / 2);
+    requestAnimationFrame(render);
+    return;
+  }
+
+  requestAnimationFrame(render);
+}
+
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
