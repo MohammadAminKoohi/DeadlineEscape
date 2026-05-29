@@ -1,0 +1,62 @@
+# =========================
+# Operating System Files
+# =========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# =========================
+# IDEs and Editors
+# =========================
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# =========================
+# Node.js (Server)
+# =========================
+server/node_modules/
+server/npm-debug.log
+server/yarn-error.log
+server/yarn-debug.log
+server/.env
+server/.env.test
+server/.env.production
+server/dist/
+server/build/
+
+# =========================
+# Arduino / ESP32
+# =========================
+# Ignore build directories and binaries
+esp32/build/
+esp32/*.elf
+esp32/*.bin
+esp32/*.hex
+esp32/*.uf2
+esp32/*.map
+esp32/*.a
+esp32/*.o
+esp32/*.eep
+esp32/*.core
+# Ignore Arduino IDE specific files
+esp32/.arduino15/
+esp32/arduino_build_*/
+esp32/arduino_cache_*/
+
+# =========================
+# Frontend (Client)
+# =========================
+# If you add a bundler later (like Webpack or Vite), ignore its output
+client/dist/
+client/build/
+client/.cache/
