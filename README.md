@@ -2,9 +2,9 @@
 
 An interactive, IoT-based survival/top-down shooter game. In this project, the player uses a custom hardware controller (ESP32) to navigate their character through a dark, procedurally generated maze, surviving and escaping from actively pursuing shadows.
 
-* **Course:** [Embedded Systems - CE4621]
-* **Professor:** [Dr. Ansari]
-* **Semester / Year:** [Spring 2026]
+* **Course:** Embedded Systems - CE4621
+* **Professor:** Dr. Ansari
+* **Semester / Year:** Spring 2026
 
 ## Team Members
 
