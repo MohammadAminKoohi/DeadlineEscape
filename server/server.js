@@ -5,11 +5,11 @@
 const WebSocket = require('ws');
 
 // ===================== CONSTANTS =====================
-const WORLD_W = 2000;
-const WORLD_H = 2000;
+const WORLD_W = 2100;
+const WORLD_H = 2100;
 const CELL_SIZE = 100;                 // each maze cell is 100x100
-const GRID_COLS = 20;                  // 20 columns
-const GRID_ROWS = 20;                  // 20 rows
+const GRID_COLS = 21;                  // 21 columns
+const GRID_ROWS = 21;                  // 21 rows
 
 const PLAYER_RADIUS = 15;
 const ENEMY_RADIUS = 15;
@@ -24,7 +24,7 @@ const STUN_DURATION_MS = 2000;
 
 const PHYSICS_TICK = 1000 / 30;        // ~33.33 ms
 const BROADCAST_TICK = 1000 / 10;      // 100 ms
-const FOV_HALF_ANGLE_DEG = 25;         // half of 50° cone
+const FOV_HALF_ANGLE_DEG = 75;         // half of 150° cone
 const FOV_HALF_ANGLE_RAD = (FOV_HALF_ANGLE_DEG * Math.PI) / 180;
 
 const PATH_RECALC_INTERVAL_MS = 500;   // how often enemy recalculates A* path
@@ -68,9 +68,9 @@ function segmentsIntersect(p1, p2, p3, p4) {
 function generateMaze() {
   const grid = Array.from({ length: GRID_COLS }, () => Array(GRID_ROWS).fill(true));
   const stack = [];
-  // Start carving from (0,0)
-  grid[0][0] = false;
-  stack.push([0, 0]);
+  // Start carving from (1,1) to leave a solid border
+  grid[1][1] = false;
+  stack.push([1, 1]);
 
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
@@ -78,14 +78,16 @@ function generateMaze() {
     const [cx, cy] = stack[stack.length - 1];
     const neighbours = [];
     for (const [dx, dy] of dirs) {
-      const nx = cx + dx, ny = cy + dy;
-      if (nx >= 0 && nx < GRID_COLS && ny >= 0 && ny < GRID_ROWS && grid[nx][ny]) {
-        neighbours.push([nx, ny]);
+      // Step by 2 to leave walls between passages
+      const nx = cx + dx * 2, ny = cy + dy * 2;
+      if (nx > 0 && nx < GRID_COLS - 1 && ny > 0 && ny < GRID_ROWS - 1 && grid[nx][ny]) {
+        neighbours.push({nx, ny, mx: cx + dx, my: cy + dy});
       }
     }
     if (neighbours.length > 0) {
-      const [nx, ny] = neighbours[Math.floor(Math.random() * neighbours.length)];
-      grid[nx][ny] = false; // carve passage
+      const {nx, ny, mx, my} = neighbours[Math.floor(Math.random() * neighbours.length)];
+      grid[mx][my] = false; // carve wall between
+      grid[nx][ny] = false; // carve destination
       stack.push([nx, ny]);
     } else {
       stack.pop();
@@ -246,11 +248,17 @@ function moveEntityWithCollision(entity, radius, walls) {
 function isEnemyVisible(player, enemy, walls) {
   const dx = enemy.x - player.x;
   const dy = enemy.y - player.y;
-  const angleToEnemy = Math.atan2(dy, dx);
+  const dist = Math.hypot(dx, dy);
 
-  // angle check
+  // The client renders a 360-degree base light up to 0.3 * FOV_RADIUS
+  const inBaseCircle = dist <= (player.fovRadius * 0.3);
+
+  const angleToEnemy = Math.atan2(dy, dx);
   let angleDiff = normalizeAngle(angleToEnemy - player.aim_angle);
-  if (Math.abs(angleDiff) > FOV_HALF_ANGLE_RAD) return false;
+  const inCone = Math.abs(angleDiff) <= (player.fov_half_rad * 1.4);
+
+  // It must be in the base circle OR in the flashlight cone
+  if (!inBaseCircle && !inCone) return false;
 
   // raycast: segment from player to enemy
   const p1 = { x: player.x, y: player.y };
@@ -278,13 +286,24 @@ function isEnemyVisible(player, enemy, walls) {
 const mazeGrid = generateMaze();
 const walls = wallsFromGrid(mazeGrid);
 
+const exitRect = {
+  x: (GRID_COLS - 2) * CELL_SIZE,
+  y: (GRID_ROWS - 2) * CELL_SIZE,
+  w: CELL_SIZE,
+  h: CELL_SIZE
+};
+
 const player = {
-  x: CELL_SIZE / 2,
-  y: CELL_SIZE / 2,
+  x: CELL_SIZE * 1.5,
+  y: CELL_SIZE * 1.5,
   aim_angle: 0,
   vx: 0,
-  vy: 0
+  vy: 0,
+  fov_half_rad: FOV_HALF_ANGLE_RAD,
+  fovRadius: 400
 };
+
+let gameState = 'waiting'; // 'waiting', 'playing', 'win', 'lose'
 
 function randomFarCell() {
   const openCells = [];
@@ -337,6 +356,8 @@ let storedInput = {
 let lastShotTime = 0;
 
 function physicsUpdate() {
+  if (gameState !== 'playing') return;
+
   const now = Date.now();
 
   player.vx = storedInput.vx * PLAYER_SPEED;
@@ -357,6 +378,7 @@ function physicsUpdate() {
       vx: dirX * BULLET_SPEED,
       vy: dirY * BULLET_SPEED
     });
+    broadcastSound('shoot');
   }
 
   if (enemy.is_stunned && now >= enemy.stun_end_time) {
@@ -369,38 +391,47 @@ function physicsUpdate() {
     const playerCol = Math.floor(player.x / CELL_SIZE);
     const playerRow = Math.floor(player.y / CELL_SIZE);
 
-    if (
-      now - enemy.lastPathTime > PATH_RECALC_INTERVAL_MS ||
-      !enemy.targetPlayerCell ||
-      enemy.targetPlayerCell.col !== playerCol ||
-      enemy.targetPlayerCell.row !== playerRow
-    ) {
-      enemy.lastPathTime = now;
-      enemy.targetPlayerCell = { col: playerCol, row: playerRow };
-      const path = findPath(mazeGrid, enemyCol, enemyRow, playerCol, playerRow);
-      enemy.path = path ? path.map(cell => ({
-        col: cell.col,
-        row: cell.row,
-        x: cell.col * CELL_SIZE + CELL_SIZE / 2,
-        y: cell.row * CELL_SIZE + CELL_SIZE / 2
-      })) : [];
-    }
-
-    if (enemy.path.length > 0) {
-      const wp = enemy.path[0];
-      const dx = wp.x - enemy.x;
-      const dy = wp.y - enemy.y;
-      const distToWp = Math.sqrt(dx * dx + dy * dy);
-
-      if (distToWp < 3) {
-        enemy.path.shift();
-      } else {
-        enemy.vx = (dx / distToWp) * ENEMY_SPEED;
-        enemy.vy = (dy / distToWp) * ENEMY_SPEED;
-      }
+    const distToPlayer = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+    if (distToPlayer < CELL_SIZE * 1.5) {
+      // Direct chase if very close (fixes pathfinding failures when in same cell)
+      const dx = player.x - enemy.x;
+      const dy = player.y - enemy.y;
+      enemy.vx = (dx / distToPlayer) * ENEMY_SPEED;
+      enemy.vy = (dy / distToPlayer) * ENEMY_SPEED;
     } else {
-      enemy.vx = 0;
-      enemy.vy = 0;
+      if (
+        now - enemy.lastPathTime > PATH_RECALC_INTERVAL_MS ||
+        !enemy.targetPlayerCell ||
+        enemy.targetPlayerCell.col !== playerCol ||
+        enemy.targetPlayerCell.row !== playerRow
+      ) {
+        enemy.lastPathTime = now;
+        enemy.targetPlayerCell = { col: playerCol, row: playerRow };
+        const path = findPath(mazeGrid, enemyCol, enemyRow, playerCol, playerRow);
+        enemy.path = path ? path.map(cell => ({
+          col: cell.col,
+          row: cell.row,
+          x: cell.col * CELL_SIZE + CELL_SIZE / 2,
+          y: cell.row * CELL_SIZE + CELL_SIZE / 2
+        })) : [];
+      }
+
+      if (enemy.path.length > 0) {
+        const wp = enemy.path[0];
+        const dx = wp.x - enemy.x;
+        const dy = wp.y - enemy.y;
+        const distToWp = Math.sqrt(dx * dx + dy * dy);
+
+        if (distToWp < 3) {
+          enemy.path.shift();
+        } else {
+          enemy.vx = (dx / distToWp) * ENEMY_SPEED;
+          enemy.vy = (dy / distToWp) * ENEMY_SPEED;
+        }
+      } else {
+        enemy.vx = 0;
+        enemy.vy = 0;
+      }
     }
 
     enemy.x += enemy.vx / 30;
@@ -441,21 +472,45 @@ function physicsUpdate() {
       // reset enemy velocity
       enemy.vx = 0;
       enemy.vy = 0;
+      broadcastSound('stun');
       continue;
+    }
+  }
+
+  // Win / Lose Conditions
+  if (gameState === 'playing') {
+    if (distSq(player.x, player.y, enemy.x, enemy.y) < (PLAYER_RADIUS + ENEMY_RADIUS + 10) ** 2) {
+      gameState = 'lose';
+      broadcastSound('kill');
+    } else if (circleVsAABB(player.x, player.y, PLAYER_RADIUS, exitRect)) {
+      gameState = 'win';
+      broadcastSound('win');
+    }
+  }
+}
+
+function broadcastSound(soundId) {
+  const msg = JSON.stringify({ type: 'sound', sound: soundId });
+  for (const ws of viewers) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
     }
   }
 }
 
 function broadcastUpdate() {
   const visible = isEnemyVisible(player, enemy, walls);
+  const dist = Math.hypot(enemy.x - player.x, enemy.y - player.y);
 
   const basePayload = {
     type: "update",
+    gameState: gameState,
     player: {
       x: Math.round(player.x),
       y: Math.round(player.y),
       aim_angle: player.aim_angle
     },
+    enemy_dist: Math.round(dist),
     bullets: bullets.map(b => ({
       x: Math.round(b.x),
       y: Math.round(b.y)
@@ -488,7 +543,8 @@ const initMsg = {
   type: "init",
   map_width: WORLD_W,
   map_height: WORLD_H,
-  walls: walls
+  walls: walls,
+  exit: exitRect
 };
 wss.on('connection', (ws) => {
 
@@ -502,10 +558,32 @@ wss.on('connection', (ws) => {
     try {
       const msg = JSON.parse(data);
 
-      if (
+      if (msg.type === 'config') {
+        if (msg.fov) {
+          player.fov_half_rad = (msg.fov / 2) * Math.PI / 180;
+        }
+        if (msg.fovRadius) {
+          player.fovRadius = msg.fovRadius;
+        }
+      } else if (
         msg.vx !== undefined && msg.vy !== undefined &&
         msg.aim_angle !== undefined && msg.is_shooting !== undefined
       ) {
+        if (gameState !== 'playing' && msg.is_shooting && !storedInput.is_shooting) {
+          gameState = 'playing';
+          player.x = CELL_SIZE * 1.5;
+          player.y = CELL_SIZE * 1.5;
+          const newSpawn = randomFarCell();
+          enemy.x = newSpawn.x;
+          enemy.y = newSpawn.y;
+          enemy.is_stunned = false;
+          enemy.path = [];
+          enemy.lastPathTime = 0;
+          enemy.targetPlayerCell = null;
+          bullets.length = 0;
+          broadcastSound('start');
+        }
+
         if (controller && controller !== ws) {
           controller.close(); 
         }
