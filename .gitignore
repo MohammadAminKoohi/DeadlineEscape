@@ -60,3 +60,5 @@ esp32/arduino_cache_*/
 client/dist/
 client/build/
 client/.cache/
+
+AGENT.md
