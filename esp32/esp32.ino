@@ -4,9 +4,9 @@
 #include <Wire.h>
 
 // Network settings
-constexpr char WIFI_SSID[] = "MAK";
-constexpr char WIFI_PASSWORD[] = "Amin1385";
-constexpr char SERVER_IP[] = "10.203.253.119";
+constexpr char WIFI_SSID[] = "your-ssid";
+constexpr char WIFI_PASSWORD[] = "your-password";
+constexpr char SERVER_IP[] = "192.168.x.x";
 constexpr uint16_t SERVER_PORT = 8080;
 constexpr char SERVER_PATH[] = "/";
 

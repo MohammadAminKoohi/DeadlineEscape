@@ -117,7 +117,7 @@ function connect() {
 
   ws.onclose = () => {
     state.connected = false;
-    statusEl.textContent = 'Disconnected — retrying...';
+    statusEl.textContent = 'Disconnected - retrying...';
     setTimeout(connect, 1500);
   };
 
@@ -247,7 +247,7 @@ function render() {
   const W = canvas.width;
   const H = canvas.height;
 
-  // 1) Paint full screen black — this hides everything not in the cone.
+  // 1) Paint full screen black - this hides everything not in the cone.
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
 
@@ -276,7 +276,7 @@ function render() {
   //    Build a triangular/wedge clipping path from the screen centre out to
   //    the canvas edges, spanning ±25° around player.aim_angle.
   //
-  //    Everything drawn AFTER ctx.clip() is masked to that wedge — anything
+  //    Everything drawn AFTER ctx.clip() is masked to that wedge - anything
   //    outside the cone stays black, producing the flashlight effect.
   // -----------------------------------------------------------------------
   ctx.save();
