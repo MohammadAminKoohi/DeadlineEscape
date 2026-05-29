@@ -1,0 +1,12 @@
+{
+  "name": "maze-game-server",
+  "version": "1.0.0",
+  "description": "Authoritative server for 2D top-down survival maze game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.13.0"
+  }
+}
