@@ -53,6 +53,17 @@ const canvas = document.getElementById('game');
 const ctx    = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 
+// ---------- Sprite Animation ----------
+const skullImgs = [];
+// Assuming the user has 4 images named skull1.png to skull4.png
+for (let i = 1; i <= 4; i++) {
+  const img = new Image();
+  img.src = `skull${i}.png`;
+  skullImgs.push(img);
+}
+let enemyAnimFrame = 0;
+let lastEnemyAnimTime = 0;
+
 function resize() {
   canvas.width  = window.innerWidth;
   canvas.height = window.innerHeight;
@@ -130,6 +141,7 @@ function connect() {
       if (msg.player) state.player = { ...state.player, ...msg.player };
       state.enemy   = msg.enemy || null;
       state.enemy_dist = msg.enemy_dist;
+      state.enemy_stunned = msg.enemy_stunned;
       state.bullets = msg.bullets || [];
     }
     else if (msg.type === 'sound') {
@@ -182,7 +194,7 @@ function updateAudio() {
   }
 
   if (d !== null && state.gameState === 'playing') {
-    const DIST_FAR = 900;
+    const DIST_FAR = 1400; // Increased distance for willowisp
     const DIST_NEAR = 300;
     const DIST_MELEE = 40;
     
@@ -194,15 +206,21 @@ function updateAudio() {
       volWillow = 0;
       volFootstep = 0;
     } else if (d > DIST_NEAR) {
-      // Enemy is near: Willowisp fades in from 50% to 100%
+      // Enemy is near: Willowisp fades in from 20% to 100%
       const t = 1 - ((d - DIST_NEAR) / (DIST_FAR - DIST_NEAR));
-      volWillow = 0.5 + (0.5 * t); 
+      volWillow = 0.2 + (0.8 * t); 
       volFootstep = 0;
     } else {
       // Enemy is VERY near: Willowisp is maxed out, Footsteps start fading in
       volWillow = 1.0;
       const t = 1 - ((d - DIST_MELEE) / (DIST_NEAR - DIST_MELEE));
       volFootstep = Math.max(0, Math.min(1, t)); 
+    }
+
+    if (state.enemy_stunned) {
+      volFootstep = 0; // Mute footsteps when enemy is stunned/frozen
+      // You can also slightly lower willowisp if desired:
+      // volWillow *= 0.5; 
     }
 
     // Apply master volume multiplier and clamp to [0, 1] to prevent Audio API errors
@@ -308,18 +326,37 @@ function render() {
     const sx = state.enemy.x + offsetX - size / 2;
     const sy = state.enemy.y + offsetY - size / 2;
     
-    if (state.enemy.is_stunned) {
-      ctx.fillStyle = '#00bcd4';
-      ctx.fillRect(sx, sy, size, size);
-      ctx.strokeStyle = '#81d4fa';
-    } else {
-      ctx.fillStyle = '#e53935';
-      ctx.fillRect(sx, sy, size, size);
-      ctx.strokeStyle = '#ff8a80';
+    const now = Date.now();
+    // Only animate if the enemy is not stunned
+    if (!state.enemy.is_stunned && now - lastEnemyAnimTime > 150) {
+      enemyAnimFrame = (enemyAnimFrame + 1) % skullImgs.length;
+      lastEnemyAnimTime = now;
     }
     
-    ctx.lineWidth = 2;
-    ctx.strokeRect(sx, sy, size, size);
+    let currentImg = skullImgs[enemyAnimFrame];
+    // Check if the image exists and is fully loaded
+    if (currentImg && currentImg.complete && currentImg.naturalWidth > 0) {
+      ctx.save();
+      if (state.enemy.is_stunned) {
+        // Apply a blue/icy filter when stunned
+        ctx.filter = 'sepia(1) hue-rotate(180deg) saturate(3)';
+      }
+      ctx.drawImage(currentImg, sx, sy, size, size);
+      ctx.restore();
+    } else {
+      // Fallback rendering if images are missing or not loaded yet
+      if (state.enemy.is_stunned) {
+        ctx.fillStyle = '#00bcd4';
+        ctx.fillRect(sx, sy, size, size);
+        ctx.strokeStyle = '#81d4fa';
+      } else {
+        ctx.fillStyle = '#e53935';
+        ctx.fillRect(sx, sy, size, size);
+        ctx.strokeStyle = '#ff8a80';
+      }
+      ctx.lineWidth = 2;
+      ctx.strokeRect(sx, sy, size, size);
+    }
   }
 
   ctx.restore();
