@@ -19,7 +19,7 @@ constexpr uint8_t JOYSTICK_Y_PIN = 35;
 constexpr uint8_t JOYSTICK_BUTTON_PIN = 32;
 
 // Timing
-constexpr unsigned long TELEMETRY_INTERVAL_MS = 200;  // 5 Hz
+constexpr unsigned long TELEMETRY_INTERVAL_MS = 125;  // 8 Hz
 constexpr unsigned long WIFI_RECONNECT_INTERVAL_MS = 5000;
 
 // Movement tuning
@@ -28,8 +28,7 @@ constexpr float RAD_TO_DEGREES = 57.2957795131f;
 
 // Joystick tuning for a 12-bit ESP32 ADC
 constexpr int ADC_CENTER = 2048;
-constexpr int DEADZONE_LOW = 1800;
-constexpr int DEADZONE_HIGH = 2200;
+constexpr long DEADZONE_RADIUS_SQ = 1200L * 1200L; // Larger deadzone, squared (800 out of 2048)
 
 WebSocketsClient webSocket;
 
@@ -113,24 +112,39 @@ Movement readMovement() {
   const float roll = atan2f(ay, az) * RAD_TO_DEGREES;
 
   // Normalize tilt into velocity vectors, then clamp so extreme tilt never exceeds [-1, 1].
-  const float vx = clampFloat(roll / MAX_TILT_DEGREES, -1.0f, 1.0f);
-  const float vy = clampFloat(pitch / MAX_TILT_DEGREES, -1.0f, 1.0f);
+  // Mirror X and Y movement independently
+  const float vx = clampFloat(-roll / MAX_TILT_DEGREES, -1.0f, 1.0f);
+  const float vy = clampFloat(-pitch / MAX_TILT_DEGREES, -1.0f, 1.0f);
 
   Serial.printf("vx=%f, vy=%f\n", vx, vy);
   return {vx, vy};
 }
 
 float readAimAngle() {
-  const int rawX = analogRead(JOYSTICK_X_PIN);
-  const int rawY = analogRead(JOYSTICK_Y_PIN);
-  const bool outsideDeadzone = rawX < DEADZONE_LOW || rawX > DEADZONE_HIGH ||
-                               rawY < DEADZONE_LOW || rawY > DEADZONE_HIGH;
+  // Oversample to reduce ESP32 ADC noise
+  long sumX = 0;
+  long sumY = 0;
+  const int numSamples = 8;
+  for (int i = 0; i < numSamples; i++) {
+    sumX += analogRead(JOYSTICK_X_PIN);
+    sumY += analogRead(JOYSTICK_Y_PIN);
+  }
+  const int rawX = sumX / numSamples;
+  const int rawY = sumY / numSamples;
 
-  if (outsideDeadzone) {
-    // Convert ADC offsets from center into a vector. Invert Y so up is positive.
-    const int dx = rawX - ADC_CENTER;
-    const int dy = ADC_CENTER - rawY;
-    lastAimAngle = atan2f(static_cast<float>(dy), static_cast<float>(dx));
+  // Invert Y so up is positive.
+  // Mirror X so left/right match the hardware orientation.
+  long dx = ADC_CENTER - rawX;
+  long dy = ADC_CENTER - rawY;
+
+  // Axial deadzone (snap to perfect horizontal/vertical if close to axis)
+  constexpr long AXIS_SNAP_THRESHOLD = 300;
+  if (dx > -AXIS_SNAP_THRESHOLD && dx < AXIS_SNAP_THRESHOLD) dx = 0;
+  if (dy > -AXIS_SNAP_THRESHOLD && dy < AXIS_SNAP_THRESHOLD) dy = 0;
+
+  // Use a proper radial deadzone to avoid spring-back wobble and noise
+  if ((dx * dx + dy * dy) > DEADZONE_RADIUS_SQ) {
+    lastAimAngle = atan2f(static_cast<float>(-dy), static_cast<float>(-dx));
   }
 
   // Inside the deadzone, keep the previous aim angle so aim persists after release.
