@@ -93,6 +93,14 @@ function generateMaze() {
       stack.pop();
     }
   }
+  
+  // Remove some random walls to create loops and a more organic, less strict maze
+  for (let i = 0; i < 40; i++) {
+    const rx = 1 + Math.floor(Math.random() * (GRID_COLS - 2));
+    const ry = 1 + Math.floor(Math.random() * (GRID_ROWS - 2));
+    grid[rx][ry] = false;
+  }
+  
   return grid;
 }
 
@@ -479,7 +487,7 @@ function physicsUpdate() {
 
   // Win / Lose Conditions
   if (gameState === 'playing') {
-    if (distSq(player.x, player.y, enemy.x, enemy.y) < (PLAYER_RADIUS + ENEMY_RADIUS + 10) ** 2) {
+    if (!enemy.is_stunned && distSq(player.x, player.y, enemy.x, enemy.y) < (PLAYER_RADIUS + ENEMY_RADIUS + 10) ** 2) {
       gameState = 'lose';
       broadcastSound('kill');
     } else if (circleVsAABB(player.x, player.y, PLAYER_RADIUS, exitRect)) {
@@ -511,6 +519,7 @@ function broadcastUpdate() {
       aim_angle: player.aim_angle
     },
     enemy_dist: Math.round(dist),
+    enemy_stunned: enemy.is_stunned,
     bullets: bullets.map(b => ({
       x: Math.round(b.x),
       y: Math.round(b.y)

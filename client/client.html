@@ -130,6 +130,7 @@ function connect() {
       if (msg.player) state.player = { ...state.player, ...msg.player };
       state.enemy   = msg.enemy || null;
       state.enemy_dist = msg.enemy_dist;
+      state.enemy_stunned = msg.enemy_stunned;
       state.bullets = msg.bullets || [];
     }
     else if (msg.type === 'sound') {
@@ -182,7 +183,7 @@ function updateAudio() {
   }
 
   if (d !== null && state.gameState === 'playing') {
-    const DIST_FAR = 900;
+    const DIST_FAR = 1400; // Increased distance for willowisp
     const DIST_NEAR = 300;
     const DIST_MELEE = 40;
     
@@ -194,15 +195,21 @@ function updateAudio() {
       volWillow = 0;
       volFootstep = 0;
     } else if (d > DIST_NEAR) {
-      // Enemy is near: Willowisp fades in from 50% to 100%
+      // Enemy is near: Willowisp fades in from 20% to 100%
       const t = 1 - ((d - DIST_NEAR) / (DIST_FAR - DIST_NEAR));
-      volWillow = 0.5 + (0.5 * t); 
+      volWillow = 0.2 + (0.8 * t); 
       volFootstep = 0;
     } else {
       // Enemy is VERY near: Willowisp is maxed out, Footsteps start fading in
       volWillow = 1.0;
       const t = 1 - ((d - DIST_MELEE) / (DIST_NEAR - DIST_MELEE));
       volFootstep = Math.max(0, Math.min(1, t)); 
+    }
+
+    if (state.enemy_stunned) {
+      volFootstep = 0; // Mute footsteps when enemy is stunned/frozen
+      // You can also slightly lower willowisp if desired:
+      // volWillow *= 0.5; 
     }
 
     // Apply master volume multiplier and clamp to [0, 1] to prevent Audio API errors
