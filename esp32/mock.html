@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Mock Simulator</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1e1e2f;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        #status {
+            padding: 10px 25px;
+            border-radius: 8px;
+            background-color: #ff4757;
+            font-weight: bold;
+            margin-bottom: 30px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: background-color 0.3s ease;
+        }
+        #status.connected {
+            background-color: #2ed573;
+        }
+        .dashboard {
+            background: #2f3542;
+            padding: 25px 40px;
+            border-radius: 12px;
+            box-shadow: 0 8px 15px rgba(0,0,0,0.4);
+            text-align: left;
+            min-width: 320px;
+        }
+        .dashboard p {
+            margin: 12px 0;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.1rem;
+            display: flex;
+            justify-content: space-between;
+        }
+        .highlight {
+            color: #ffa502;
+            font-weight: bold;
+        }
+        .instructions {
+            margin-top: 40px;
+            color: #a4b0be;
+            text-align: center;
+            line-height: 1.8;
+            background: rgba(255,255,255,0.05);
+            padding: 20px;
+            border-radius: 10px;
+        }
+        kbd {
+            background-color: #57606f;
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: white;
+            font-family: monospace;
+            box-shadow: 0 2px 0 #2f3542;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="status">Status: Disconnected</div>
+
+    <div class="dashboard">
+        <p><span>vx (Roll):</span> <span id="val_vx" class="highlight">0.00</span></p>
+        <p><span>vy (Pitch):</span> <span id="val_vy" class="highlight">0.00</span></p>
+        <p><span>aim_angle:</span> <span id="val_angle" class="highlight">0.00 rad</span></p>
+        <p><span>is_shooting:</span> <span id="val_shoot" class="highlight">false</span></p>
+    </div>
+
+    <div class="instructions">
+        <h3>Controller Mapping</h3>
+        <p>Movement: <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or Arrows</p>
+        <p>Aiming: <b>Mouse Move</b> (relative to screen center)</p>
+        <p>Shoot: <b>Left Click</b> or <kbd>Space</kbd></p>
+    </div>
+
+    <script>
+        const state = {
+            vx: 0,
+            vy: 0,
+            aim_angle: 0,
+            is_shooting: false
+        };
+
+        const keys = { w: false, a: false, s: false, d: false, space: false };
+        let isMouseDown = false;
+        let ws;
+
+        const SERVER_URL = 'ws://10.203.253.119:8080';
+        const DOM_VX = document.getElementById('val_vx');
+        const DOM_VY = document.getElementById('val_vy');
+        const DOM_ANGLE = document.getElementById('val_angle');
+        const DOM_SHOOT = document.getElementById('val_shoot');
+        const DOM_STATUS = document.getElementById('status');
+
+        function connectWebSocket() {
+            ws = new WebSocket(SERVER_URL);
+
+            ws.onopen = () => {
+                DOM_STATUS.textContent = "Status: Connected";
+                DOM_STATUS.classList.add('connected');
+            };
+
+            ws.onclose = () => {
+                DOM_STATUS.textContent = "Status: Disconnected (Retrying...)";
+                DOM_STATUS.classList.remove('connected');
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            ws.onerror = (err) => {
+                ws.close();
+            };
+        }
+
+        function updateLogic() {
+            let rawVx = 0;
+            let rawVy = 0;
+
+            if (keys.w) rawVy -= 1;
+            if (keys.s) rawVy += 1;
+            if (keys.a) rawVx -= 1;
+            if (keys.d) rawVx += 1;
+
+            if (rawVx !== 0 || rawVy !== 0) {
+                const length = Math.sqrt(rawVx * rawVx + rawVy * rawVy);
+                state.vx = rawVx / length;
+                state.vy = rawVy / length;
+            } else {
+                state.vx = 0;
+                state.vy = 0;
+            }
+
+            state.is_shooting = keys.space || isMouseDown;
+
+            DOM_VX.innerText = state.vx.toFixed(2);
+            DOM_VY.innerText = state.vy.toFixed(2);
+            DOM_SHOOT.innerText = state.is_shooting.toString();
+        }
+
+        window.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            if (key === 'w' || key === 'arrowup') keys.w = true;
+            if (key === 'a' || key === 'arrowleft') keys.a = true;
+            if (key === 's' || key === 'arrowdown') keys.s = true;
+            if (key === 'd' || key === 'arrowright') keys.d = true;
+            if (key === ' ') { keys.space = true; e.preventDefault(); }
+            updateLogic();
+        });
+
+        window.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            if (key === 'w' || key === 'arrowup') keys.w = false;
+            if (key === 'a' || key === 'arrowleft') keys.a = false;
+            if (key === 's' || key === 'arrowdown') keys.s = false;
+            if (key === 'd' || key === 'arrowright') keys.d = false;
+            if (key === ' ') keys.space = false;
+            updateLogic();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            const centerX = window.innerWidth / 2;
+            const centerY = window.innerHeight / 2;
+            state.aim_angle = Math.atan2(e.clientY - centerY, e.clientX - centerX);
+            DOM_ANGLE.innerText = state.aim_angle.toFixed(2) + ' rad';
+        });
+
+        window.addEventListener('mousedown', () => { isMouseDown = true; updateLogic(); });
+        window.addEventListener('mouseup', () => { isMouseDown = false; updateLogic(); });
+
+        setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const payload = JSON.stringify({
+                    vx: Number(state.vx.toFixed(2)),
+                    vy: Number(state.vy.toFixed(2)),
+                    aim_angle: Number(state.aim_angle.toFixed(2)),
+                    is_shooting: state.is_shooting
+                });
+                ws.send(payload);
+            }
+        }, 200);
+
+        connectWebSocket();
+    </script>
+</body>
+</html>
