@@ -12,7 +12,7 @@ const GRID_COLS = 21;                  // 21 columns
 const GRID_ROWS = 21;                  // 21 rows
 
 const PLAYER_RADIUS = 15;
-const ENEMY_RADIUS = 15;
+const ENEMY_RADIUS = 20;
 const BULLET_RADIUS = 3;
 
 const PLAYER_SPEED = 200;              // pixels per second
@@ -41,7 +41,7 @@ function distSq(x1, y1, x2, y2) {
   return (x1 - x2) ** 2 + (y1 - y2) ** 2;
 }
 
-/** Normalize an angle to [-PI, PI] */
+
 function normalizeAngle(angle) {
   while (angle > Math.PI) angle -= 2 * Math.PI;
   while (angle < -Math.PI) angle += 2 * Math.PI;
